@@ -34,22 +34,20 @@
 
             <main class="content" id="content">
 
-                <!-- первый экран: оба блока всегда помещаются целиком, без прокрутки -->
+                <!-- первый экран: оба блока помещаются целиком, без прокрутки -->
                 <div class="first-screen">
+                    <section class="section">
+                        <h2 class="section__title">Распределение по вариантам</h2>
+                        <div class="variants" id="variants"></div>
+                    </section>
 
-                <section class="section" id="variantsSection">
-                    <h2 class="section__title">Распределение по вариантам</h2>
-                    <div class="variants" id="variants"></div>
-                </section>
-
-                <section class="section" id="overallSection">
-                    <h2 class="section__title">Общая статистика</h2>
-                    <div class="chart" id="chart"></div>
-                </section>
-
+                    <section class="section">
+                        <h2 class="section__title">Общая статистика</h2>
+                        <div class="chart" id="chart"></div>
+                    </section>
                 </div>
 
-                <section class="section" id="detailsSection">
+                <section class="section">
                     <h2 class="section__title">Детализация статистики</h2>
                     <div class="details" id="details"></div>
                 </section>
