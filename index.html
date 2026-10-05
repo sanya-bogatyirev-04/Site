@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Аналитический дашборд</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
+</head>
+<body>
+    <div class="page">
+
+        <header class="header">
+            <div class="header__titles">
+                <h1 class="header__title">Аналитический дашборд</h1>
+                <p class="header__subtitle">оценки качества автоматизированной классификации элементов</p>
+            </div>
+            <button class="btn btn--pdf no-print" id="exportPdfBtn" type="button">Выгрузить в PDF</button>
+        </header>
+
+        <div class="toolbar">
+            <nav class="tabs" id="scenarioTabs" aria-label="Сценарии"></nav>
+            <button class="btn no-print" id="chooseFolderBtn" type="button">Выбрать папку</button>
+            <input type="file" id="folderInput" webkitdirectory multiple hidden>
+        </div>
+
+        <div class="layout">
+
+            <aside class="registry">
+                <h2 class="registry__title">Реестр ЦИМ</h2>
+                <ul class="registry__list" id="registryList"></ul>
+            </aside>
+
+            <main class="content" id="content">
+
+                <!-- первый экран: оба блока всегда помещаются целиком, без прокрутки -->
+                <div class="first-screen">
+
+                <section class="section" id="variantsSection">
+                    <h2 class="section__title">Распределение по вариантам</h2>
+                    <div class="variants" id="variants"></div>
+                </section>
+
+                <section class="section" id="overallSection">
+                    <h2 class="section__title">Общая статистика</h2>
+                    <div class="chart" id="chart"></div>
+                </section>
+
+                </div>
+
+                <section class="section" id="detailsSection">
+                    <h2 class="section__title">Детализация статистики</h2>
+                    <div class="details" id="details"></div>
+                </section>
+
+            </main>
+
+            <button class="to-top no-print" id="toTopBtn" type="button" aria-label="Наверх" title="Наверх">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6,14.5 12,8.5 18,14.5"/></svg>
+            </button>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
