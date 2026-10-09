@@ -4,7 +4,7 @@
    1. Настройки и справочники
    ============================================================ */
 
-/** Вкладки сценариев. Сценарий отчёта определяется по имени xml-файла. */
+/** Вкладки сценариев. Сценарий отчёта определяется по имени модели — см. detectScenarioKey. */
 const SCENARIOS = [
     { key: 'А', title: 'Сценарий А' },
     { key: 'Б', title: 'Сценарий Б' },
@@ -45,7 +45,7 @@ const PLACEHOLDER_CATEGORIES = [
     { name: 'Иное',                code: 'ЭЛ ХХ ХХ ХХ' }
 ];
 
-/** Категория для элементов, класс которых не распознал даже агент. */
+/** Категория для элементов, класс которых не распознал агент */
 const OTHER_CATEGORY = { name: 'Иное', code: 'ЭЛ ХХ ХХ ХХ' };
 
 /** Карточка-заглушка блока «Детализация статистики». */
@@ -53,38 +53,43 @@ const PLACEHOLDER_CATEGORY_STATS = {
     name: 'Категория элемента', code: 'ЭЛ ХХ ХХ ХХ', percent: 0, total: null, topConfusedClasses: null
 };
 
-/** Где в xml-отчёте может быть записано имя модели (.ifc) — см. findModelName. */
-const MODEL_ATTRIBUTES = ['model', 'modelName', 'ifcFile', 'ifc', 'fileName', 'file'];
-const MODEL_TAGS = ['model', 'modelName', 'ifcFile', 'ifc', 'file'];
+const REPORT_ROOT_TAG = 'msskReport'; // корневой атрибут по которому определяем подходит ли нам отчёт (если атрибута нет -> отчёт не подходит)
+const REPORT_MODEL_ATTRIBUTE = 'model'; // параметр в корневом атрибуте по которому определяем имя модели 
 
 const CONFIDENCE_THRESHOLD = 92;
 const CHART_Y_TICKS = [100, CONFIDENCE_THRESHOLD, 75, 50, 25];
 const TOP_LIST_SIZE = 3;
-const HIGHLIGHT_DURATION_MS = 1500;
-const TO_TOP_SCROLL_RATIO = 0.5; // стрелка «наверх» появляется после прокрутки на половину экрана
+const NOTICE_DURATION_MS = 5000; // на какое время будет показываться уведомление
+const NOTICE_TEXT_NO_REPORTS = 'Не найдены отчёты для данного дашборда, выберите другую папку';
+const NOTICE_TEXT_NO_SCENARIO_REPORTS = 'Для сценария {сценарий} не найдены отчёты для данного дашборда';
 
-const PDF_PAGE_WIDTH_MM = 297; // ширина A4 в альбомной ориентации
+const HIGHLIGHT_DURATION_MS = 1500;
+const BAR_ANIMATION_DURATION_MS = 600;
+const BAR_ANIMATION_STAGGER_MS = 60; // задержка между соседними столбцами для анимации
+const TO_TOP_SCROLL_RATIO = 0.5; // сколько процентов экрана требуется прокрутить чтобы появилась стрелка
+
+const PDF_PAGE_WIDTH_MM = 297;
 const PDF_RENDER_SCALE = 2;
 const PDF_JPEG_QUALITY = 0.92;
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
-/** Стили SVG, которые html2canvas не берёт из style.css и которые нужно вписать в сами элементы. */
 const SVG_STYLE_PROPERTIES = ['fill', 'stroke', 'stroke-width', 'stroke-dasharray', 'font-family', 'font-size',
     'font-weight', 'text-anchor', 'dominant-baseline'];
 
 /* ============================================================
-   2. Разбор xml-отчёта (корень <msskReport>)
+   2. Разбор xml-отчёта
    ============================================================ */
 
 /**
- * Определяет сценарий (А/Б/В/Г) по имени xml-файла: буква сразу после номера модели
- * («Сколтех_5А_...», «Модель 1.А.xml») либо отдельная буква перед расширением («..._Б.xml»).
- * @param {string} fileName
- * @returns {string|null} null — буквы нет, отчёт показывается во всех сценариях
+ * Определяет сценарий (А/Б/В/Г) по имени модели: это символ перед последней точкой
+ * полного имени («СколтехМодель 5А.ifc» → А, «МП4МКДБ2ВКРЭ20R23В.ifc» → В).
+ * @param {string} modelName полное имя модели с расширением
+ * @returns {string|null} null — символ перед расширением не является буквой сценария
  */
-function detectScenarioKey(fileName) {
-    const match = fileName.match(/\d[._\s]?([АБВГ])(?![А-Яа-яЁё])/)
-        || fileName.match(/[._\s]([АБВГ])\.[^.]+$/);
-    return match ? match[1] : null;
+function detectScenarioKey(modelName) {
+    const extensionDotIndex = modelName.lastIndexOf('.');
+    if (extensionDotIndex < 1) return null;
+    const scenarioKey = modelName[extensionDotIndex - 1].toUpperCase();
+    return SCENARIOS.some(scenario => scenario.key === scenarioKey) ? scenarioKey : null;
 }
 
 function isKnownClassName(className) {
@@ -100,77 +105,32 @@ function readClass(elementNode, tagName) {
     };
 }
 
-/** Имя модели, записанное у самого узла или выше по дереву (обёртка, <scenario>, <msskReport>). */
-function findInheritedModelName(startNode) {
-    for (let node = startNode; node && node.nodeType === Node.ELEMENT_NODE; node = node.parentElement) {
-        for (const attribute of MODEL_ATTRIBUTES) {
-            const modelName = (node.getAttribute(attribute) || '').trim();
-            if (modelName) return modelName;
-        }
-        if (MODEL_TAGS.includes(node.nodeName)) {
-            const modelName = (node.getAttribute('name') || '').trim();
-            if (modelName) return modelName;
-        }
-    }
-    return null;
-}
-
-/**
- * Имя модели (.ifc), к которой относится элемент отчёта. Поддерживаются записи:
- *   <element><model>Модель 1.А.ifc</model>           — дочерний узел из MODEL_TAGS;
- *   <element model="Модель 1.А.ifc">                 — атрибут из MODEL_ATTRIBUTES;
- *   <model name="Модель 1.А.ifc"> ...элементы...     — узел-обёртка;
- *   <msskReport model="Модель 1.А.ifc">              — одна модель на весь отчёт.
- * Если формат окажется другим — достаточно дополнить MODEL_ATTRIBUTES / MODEL_TAGS.
- * @param {Element} elementNode узел <element>
- * @param {Map<Element, string|null>} inheritedModelCache модели, уже найденные для родительских узлов
- * @returns {string|null} null — модель в отчёте не указана
- */
-function findModelName(elementNode, inheritedModelCache) {
-    const childNode = Array.from(elementNode.children).find(node => MODEL_TAGS.includes(node.nodeName));
-    if (childNode) {
-        const modelName = (childNode.getAttribute('name') || childNode.textContent || '').trim();
-        if (modelName) return modelName;
-    }
-    for (const attribute of MODEL_ATTRIBUTES) {
-        const modelName = (elementNode.getAttribute(attribute) || '').trim();
-        if (modelName) return modelName;
-    }
-
-    // у соседних элементов родитель общий — модель «сверху» ищется один раз
-    const parentNode = elementNode.parentElement;
-    if (!inheritedModelCache.has(parentNode)) {
-        inheritedModelCache.set(parentNode, findInheritedModelName(parentNode));
-    }
-    return inheritedModelCache.get(parentNode);
-}
-
 /**
  * Категория элемента = его верный класс:
- *   оператор согласился с агентом — класс агента;
- *   оператор не согласился        — класс, который утвердил оператор
- *                                   (выбранный ТОП-2/ТОП-3 либо старое значение элемента).
- * Если оператор снял галку, а старое значение пустое, верный класс неизвестен —
- * тогда ошибка записывается на класс, который предложил агент.
- * «Иное» — только элементы, где и агент не распознал класс («Unknown»).
+ *   агент подтверждён (changed="false")                — класс агента;
+ *   перевыбрано       (changed="true", applied="true")  — класс, выбранный оператором (ТОП-2/ТОП-3);
+ *   галка снята       (changed="true", applied="false") — старое значение элемента, которое
+ *                     отчёт пишет в operatorValue.
+ * «Иное» — элементы, верный класс которых неизвестен: галка снята, а старое значение
+ * пустое, либо класс не распознан («Unknown»).
  */
 function resolveCategory(isError, agentClass, operatorClass) {
-    const candidates = isError ? [operatorClass, agentClass] : [agentClass];
-    const source = candidates.find(candidate => isKnownClassName(candidate.name));
-    if (!source) return OTHER_CATEGORY;
+    const source = isError ? operatorClass : agentClass;
+    if (!isKnownClassName(source.name)) return OTHER_CATEGORY;
     return { name: source.name, code: source.code.replace(/^\((.*)\)$/, '$1') };
 }
 
 /**
- * Разбирает текст xml-отчёта в плоский список элементов. Элементы без модели в расчёт не идут.
+ * Разбирает текст xml-отчёта.
+ * Ошибка агента определяется по changed="true" у элемента; applied уточняет её вид:
+ * галка снята (applied="false") или выбран другой вариант (applied="true").
  * @param {string} xmlText
- * @returns {Array<ReportElement>}
- * @throws {Error} файл не xml, отчёт другого формата или в нём не указана модель
- *
+ * @returns {{modelName: string, elements: Array<ReportElement>}}
+ * @throws {Error} файл не xml, нет корневого узла <msskReport> или в нём не указана модель
  * @typedef {Object} ReportElement
- * @property {string} modelName имя модели (.ifc)
  * @property {string} variantKey ключ варианта (VARIANTS[i].key)
- * @property {boolean} isError оператор не согласился с агентом: снял галку либо выбрал ТОП-2/ТОП-3
+ * @property {boolean} isError оператор изменил решение агента: снял галку либо выбрал ТОП-2/ТОП-3
+ * @property {boolean} isRejected ошибка вида «галка снята» (applied="false"), а не «перевыбрано»
  * @property {string} agentClassName класс, предложенный агентом (ТОП-1)
  * @property {string} operatorClassName класс, утверждённый оператором
  * @property {string[]} agentProposals всё, что агент предложил оператору:
@@ -183,22 +143,21 @@ function parseReport(xmlText) {
         throw new Error('Файл повреждён или не является xml');
     }
     const rootNode = xmlDocument.documentElement;
-    if (rootNode.nodeName !== 'msskReport') {
-        throw new Error('Не отчёт по решениям оператора (корневой узел <' + rootNode.nodeName + '>, ожидается <msskReport>)');
+    if (rootNode.nodeName !== REPORT_ROOT_TAG) {
+        throw new Error('Нет корневого узла <' + REPORT_ROOT_TAG + '> (найден <' + rootNode.nodeName + '>)');
+    }
+    const modelName = (rootNode.getAttribute(REPORT_MODEL_ATTRIBUTE) || '').trim();
+    if (!modelName) {
+        throw new Error('У <' + REPORT_ROOT_TAG + '> не заполнен атрибут ' + REPORT_MODEL_ATTRIBUTE);
     }
 
     const elements = [];
-    const inheritedModelCache = new Map();
-
-    // узлов <scenario> с одним ключом может быть два (appliesValues true/false) — они складываются
     for (const scenarioNode of rootNode.querySelectorAll(':scope > scenarios > scenario')) {
         const variantKey = scenarioNode.getAttribute('key');
 
         for (const elementNode of scenarioNode.querySelectorAll(':scope > elements > element')) {
-            const modelName = findModelName(elementNode, inheritedModelCache);
-            if (!modelName) continue;
-
             const isError = elementNode.getAttribute('changed') === 'true';
+            const isRejected = isError && elementNode.getAttribute('applied') === 'false';
             const agentClass = readClass(elementNode, 'agentValue');
             const operatorClass = readClass(elementNode, 'operatorValue');
             const optionNames = Array.from(
@@ -207,9 +166,10 @@ function parseReport(xmlText) {
             );
 
             elements.push({
-                modelName: modelName,
                 variantKey: variantKey,
                 isError: isError,
+                guid: elementNode.getAttribute('guid') || '',
+                isRejected: isRejected,
                 agentClassName: agentClass.name,
                 operatorClassName: operatorClass.name,
                 agentProposals: optionNames.length ? optionNames : [agentClass.name],
@@ -217,28 +177,34 @@ function parseReport(xmlText) {
             });
         }
     }
-
-    if (elements.length === 0) {
-        throw new Error('В отчёте не указана модель (например, атрибут model у <msskReport>)');
-    }
-    return elements;
+    return { modelName: modelName, elements: elements };
 }
 
 /* ============================================================
    3. Расчёт статистики
-   Чтобы изменить формулу, достаточно поправить функции этого раздела.
    ============================================================ */
 
 function incrementCounter(counter, key) {
     counter.set(key, (counter.get(key) || 0) + 1);
 }
 
-/** Возвращает до `limit` самых частых ключей счётчика Map<string, number>. */
+/**
+ * Возвращает до `limit` самых частых ключей счётчика Map<string, number>.
+ * sharePercent — доля ключа от суммы всего счётчика (а не только показанных строк).
+ * @returns {Array<{name: string, sharePercent: number}>}
+ */
 function getMostFrequentKeys(counter, limit) {
+    let totalCount = 0;
+    for (const count of counter.values()) totalCount += count;
+
     return Array.from(counter.entries())
         .sort((first, second) => second[1] - first[1] || first[0].localeCompare(second[0], 'ru'))
         .slice(0, limit)
-        .map(entry => entry[0]);
+        .map(entry => ({ name: entry[0], sharePercent: calculatePercent(entry[1], totalCount) }));
+}
+
+function isOtherCategory(categoryName) {
+    return categoryName === OTHER_CATEGORY.name;
 }
 
 function calculatePercent(part, total) {
@@ -248,11 +214,11 @@ function calculatePercent(part, total) {
 /**
  * Блок «Распределение по вариантам».
  *   всего экземпляров — число элементов варианта;
- *   допущено ошибок   — элементы, где оператор не согласился с агентом;
+ *   допущено ошибок   — элементы, изменённые оператором (changed): отключённые и перевыбранные;
  *   точность          — доля элементов без ошибки, %;
  *   топ-3 проблемных  — категории, в которых больше всего ошибок.
  * @param {Array<ReportElement>} elements
- * @returns {Object<string, {accuracy: number, total: number, errors: number, topProblemClasses: string[]}>}
+ * @returns {Object<string, {accuracy: number, total: number, errors: number, topProblemClasses: Array}>}
  *          ключ — VARIANTS[i].key
  */
 function calculateVariantStats(elements) {
@@ -286,20 +252,18 @@ function calculateVariantStats(elements) {
 
 /**
  * Блоки «Общая статистика» и «Детализация статистики» — показатели по каждой категории
- * по всем четырём вариантам, отсортированные по убыванию процента.
+ * по всем четырём вариантам, отсортированные по убыванию процента
  *   всего экземпляров — подтверждённые предсказания категории + ошибки, отнесённые к ней;
  *   процент           — доля подтверждённых от «всего»;
  *   топ-3 классов     — с какими классами агент чаще всего путал категорию. Только по ошибкам:
- *                       1) всё, что агент предложил для ошибочного элемента категории
- *                          (ТОП-1 при ≥ 92%, ТОП-1..3 при < 92%), кроме самой категории;
- *                       2) обратная сторона: агент назвал этой категорией элемент, который
- *                          оператор отнёс к другому классу, — добавляется класс оператора.
+ *                       всё, что агент предложил для ошибочного элемента категории
+ *                       (ТОП-1 при ≥ 92%, ТОП-1..3 при < 92%), кроме самой категории.
  * @param {Array<ReportElement>} elements
- * @returns {Array<{name: string, code: string, percent: number, total: number, topConfusedClasses: string[]}>}
+ * @returns {Array<{name: string, code: string, percent: number, total: number, topConfusedClasses: Array}>}
  */
 function calculateCategoryStats(elements) {
     const groups = new Map();        // «код|наименование» -> показатели категории
-    const groupsByName = new Map();  // наименование -> те же показатели, для поиска по классу агента
+    const groupsByName = new Map();  // наименование -> те же показатели
     const errorElements = [];
 
     for (const element of elements) {
@@ -324,11 +288,6 @@ function calculateCategoryStats(elements) {
             }
         }
 
-        const agentGroup = groupsByName.get(element.agentClassName);
-        const correctName = element.operatorClassName;
-        if (agentGroup && isKnownClassName(correctName) && correctName !== element.agentClassName) {
-            incrementCounter(agentGroup.confusedWith, correctName);
-        }
     }
 
     return Array.from(groups.values(), group => ({
@@ -338,6 +297,7 @@ function calculateCategoryStats(elements) {
         total: group.total,
         topConfusedClasses: getMostFrequentKeys(group.confusedWith, TOP_LIST_SIZE)
     })).sort((first, second) =>
+        isOtherCategory(first.name) - isOtherCategory(second.name) ||
         second.percent - first.percent || second.total - first.total || first.name.localeCompare(second.name, 'ru'));
 }
 
@@ -348,9 +308,7 @@ function calculateCategoryStats(elements) {
 const state = {
     activeScenarioKey: SCENARIOS[0].key,
     isFolderChosen: false,
-    /** @type {Array<{scenarioKey: string|null, elements: Array<ReportElement>, modelNames: Set<string>}>} */
     reports: [],
-    /** Снятые галочки реестра: ключи «сценарий|модель». */
     excludedModelKeys: new Set()
 };
 
@@ -364,13 +322,14 @@ const dom = {
     toTopButton: document.getElementById('toTopBtn'),
     variantCards: document.getElementById('variants'),
     barChart: document.getElementById('chart'),
-    categoryCards: document.getElementById('details')
+    categoryCards: document.getElementById('details'),
+    notice: document.getElementById('notice'),
+    noticeText: document.getElementById('noticeText')
 };
 
 /** Отчёты активного сценария. */
 function getActiveReports() {
-    return state.reports.filter(report =>
-        report.scenarioKey === null || report.scenarioKey === state.activeScenarioKey);
+    return state.reports.filter(report => report.scenarioKey === state.activeScenarioKey);
 }
 
 function getModelKey(modelName) {
@@ -383,22 +342,15 @@ function isModelIncluded(modelName) {
 
 /** Модели активного сценария по алфавиту; одна модель из разных отчётов — одна строка. */
 function getActiveModelNames() {
-    const modelNames = new Set();
-    for (const report of getActiveReports()) {
-        for (const modelName of report.modelNames) modelNames.add(modelName);
-    }
+    const modelNames = new Set(getActiveReports().map(report => report.modelName));
     return Array.from(modelNames).sort((first, second) => first.localeCompare(second, 'ru', { numeric: true }));
 }
 
 /** Элементы активного сценария из моделей, отмеченных в реестре. */
 function getActiveElements() {
-    const elements = [];
-    for (const report of getActiveReports()) {
-        for (const element of report.elements) {
-            if (isModelIncluded(element.modelName)) elements.push(element);
-        }
-    }
-    return elements;
+    return getActiveReports()
+        .filter(report => isModelIncluded(report.modelName))
+        .flatMap(report => report.elements);
 }
 
 /* ============================================================
@@ -460,13 +412,17 @@ function renderRegistry() {
 }
 
 /** Заголовок и ровно три строки списка; недостающие строки — прочерки. */
-function appendTopList(parent, title, classNames) {
+function appendTopList(parent, title, topClasses) {
     parent.append(createElement('p', 'stat__label', title));
     for (let index = 0; index < TOP_LIST_SIZE; index++) {
-        const className = classNames && classNames[index];
-        parent.append(className
-            ? createElement('p', 'stat__item', '- ' + className)
-            : createElement('p', 'stat__item stat__item--empty', '-'));
+        const topClass = topClasses && topClasses[index];
+        if (!topClass) {
+            parent.append(createElement('p', 'stat__item stat__item--empty', '-'));
+            continue;
+        }
+        const row = createElement('p', 'stat__item', '- ' + topClass.name);
+        row.append(createElement('span', 'stat__share', topClass.sharePercent + '%')); // доля в списке
+        parent.append(row);
     }
 }
 
@@ -534,6 +490,25 @@ function renderBarChart(categoryStats) {
 
     plot.append(thresholdLine, bars);
     dom.barChart.replaceChildren(plot, labels);
+
+    animateBarChart(); // анимация построения;
+}
+
+/**
+ * Анимация построения диаграммы
+ */
+function animateBarChart() {
+    dom.barChart.querySelectorAll('.chart__bar').forEach((bar, barIndex) => {
+        bar.animate(
+            [{ height: '0%' }, { height: bar.style.height }],
+            {
+                duration: BAR_ANIMATION_DURATION_MS,
+                delay: barIndex * BAR_ANIMATION_STAGGER_MS,
+                easing: 'ease-out',
+                fill: 'backwards'
+            }
+        );
+    });
 }
 
 /** Кольцевая диаграмма: заливка идёт от «3 часов» по часовой стрелке. */
@@ -612,12 +587,36 @@ function renderStatistics() {
     renderCategoryCards(categoryStats);
 }
 
+let noticeTimerId = null;
+
+/**
+ * Уведомление о пустом дашборде: появляется над кнопкой выбора папки после выбора папки
+ * или смены сценария, если не обработан ни один отчёт вообще либо ни один отчёт
+ * активного сценария, и само исчезает через NOTICE_DURATION_MS.
+ */
+function renderNotice() {
+    let message = '';
+    if (state.isFolderChosen && state.reports.length === 0) {
+        message = NOTICE_TEXT_NO_REPORTS;
+    } else if (state.isFolderChosen && getActiveReports().length === 0) {
+        message = NOTICE_TEXT_NO_SCENARIO_REPORTS.replace('{сценарий}', state.activeScenarioKey);
+    }
+
+    clearTimeout(noticeTimerId);
+    dom.noticeText.textContent = message;
+    dom.notice.hidden = !message;
+    if (message) {
+        noticeTimerId = setTimeout(() => { dom.notice.hidden = true; }, NOTICE_DURATION_MS);
+    }
+}
+
 /** Перерисовывает всё, что зависит от сценария и набора отчётов. */
 function renderPage() {
     dom.chooseFolderButton.textContent = state.isFolderChosen ? 'Изменить папку' : 'Выбрать папку';
     highlightActiveScenarioTab();
     renderRegistry();
     renderStatistics();
+    renderNotice();
 }
 
 /* ============================================================
@@ -627,6 +626,31 @@ function renderPage() {
 let lastFolderRequestId = 0;
 let highlightTimerId = null;
 
+/**
+ * Защита от задвоения
+ */
+function removeDuplicateElements(reports) {
+    const seenGuidsByModel = new Map();
+    for (const report of reports) {
+        if (!seenGuidsByModel.has(report.modelName)) seenGuidsByModel.set(report.modelName, new Set());
+        const seenGuids = seenGuidsByModel.get(report.modelName);
+        const elementCount = report.elements.length;
+
+        report.elements = report.elements.filter(element => {
+            if (!element.guid) return true;
+            if (seenGuids.has(element.guid)) return false;
+            seenGuids.add(element.guid);
+            return true;
+        });
+
+        const duplicateCount = elementCount - report.elements.length;
+        if (duplicateCount > 0) {
+            console.warn('Модель «' + report.modelName + '»: пропущено повторов элементов — ' + duplicateCount);
+        }
+    }
+    return reports;
+}
+
 /** Читает и разбирает все xml из выбранной папки. Файлы, которые не удалось разобрать, пропускаются. */
 async function loadReportsFromFolder(fileList) {
     const requestId = ++lastFolderRequestId;
@@ -634,12 +658,12 @@ async function loadReportsFromFolder(fileList) {
 
     const parsedReports = await Promise.all(xmlFiles.map(async file => {
         try {
-            const elements = parseReport(await file.text());
-            return {
-                scenarioKey: detectScenarioKey(file.name),
-                elements: elements,
-                modelNames: new Set(elements.map(element => element.modelName))
-            };
+            const report = parseReport(await file.text());
+            const scenarioKey = detectScenarioKey(report.modelName);
+            if (!scenarioKey) {
+                throw new Error('по имени модели «' + report.modelName + '» не удалось определить сценарий');
+            }
+            return { scenarioKey: scenarioKey, modelName: report.modelName, elements: report.elements };
         } catch (error) {
             console.warn('Файл пропущен: ' + file.name + ' — ' + error.message);
             return null;
@@ -648,7 +672,7 @@ async function loadReportsFromFolder(fileList) {
     if (requestId !== lastFolderRequestId) return; // пока читали, выбрали другую папку
 
     state.isFolderChosen = true;
-    state.reports = parsedReports.filter(Boolean);
+    state.reports = removeDuplicateElements(parsedReports.filter(Boolean));
     state.excludedModelKeys.clear();
     renderPage();
 }
@@ -779,8 +803,7 @@ function bindEvents() {
         const isScrolledDown = dom.content.scrollTop > dom.content.clientHeight * TO_TOP_SCROLL_RATIO;
         dom.toTopButton.classList.toggle('to-top--visible', isScrolledDown);
     }, { passive: true });
-    dom.toTopButton.addEventListener('click', () => dom.content.scrollTo({ top: 0, behavior: 'smooth' }));
-}
+    dom.toTopButton.addEventListener('click', () => dom.content.scrollTo({ top: 0, behavior: 'smooth' }));}
 
 renderScenarioTabs();
 bindEvents();
